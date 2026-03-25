@@ -1,62 +1,30 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import ItemForm, { initialFormState } from './components/ItemForm';
 import InventoryTable from './components/InventoryTable';
-
-const STORAGE_KEY = 'nail-spa-inventory-items';
-
-function makeId() {
-  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
-    return crypto.randomUUID();
-  }
-
-  return `item-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-}
+import { supabase } from './supabaseClient';
 
 function sanitizeItem(raw) {
   return {
-    id: raw?.id ?? makeId(),
+    id: raw?.id ?? null,
     name: typeof raw?.name === 'string' ? raw.name : '',
-    category: typeof raw?.category === 'string' && raw.category.trim() ? raw.category : 'Other',
-    quantity: Number.isFinite(Number(raw?.quantity)) ? Math.max(0, Number(raw.quantity)) : 0,
-    minStock: Number.isFinite(Number(raw?.minStock)) ? Math.max(0, Number(raw.minStock)) : 0,
-    unit: typeof raw?.unit === 'string' && raw.unit.trim() ? raw.unit : 'pcs',
+    category:
+      typeof raw?.category === 'string' && raw.category.trim()
+        ? raw.category
+        : 'Other',
+    quantity: Number.isFinite(Number(raw?.quantity))
+      ? Math.max(0, Number(raw.quantity))
+      : 0,
+    minStock: Number.isFinite(Number(raw?.minStock ?? raw?.min_stock))
+      ? Math.max(0, Number(raw?.minStock ?? raw?.min_stock))
+      : 0,
+    unit:
+      typeof raw?.unit === 'string' && raw.unit.trim()
+        ? raw.unit
+        : 'pcs',
     location: typeof raw?.location === 'string' ? raw.location : '',
     notes: typeof raw?.notes === 'string' ? raw.notes : ''
   };
 }
-// example starter data to populate a new inventory - won't be used if valid data already exists in localStorage
-const starterItems = [
-  {
-    id: makeId(),
-    name: 'Acetone',
-    category: 'Cleaning',
-    quantity: 3,
-    minStock: 2,
-    unit: 'bottles',
-    location: 'Back shelf A',
-    notes: 'Large refill bottle'
-  },
-  {
-    id: makeId(),
-    name: 'Nail Files',
-    category: 'Disposable',
-    quantity: 14,
-    minStock: 20,
-    unit: 'pcs',
-    location: 'Drawer 2',
-    notes: '100/180 grit'
-  },
-  {
-    id: makeId(),
-    name: 'Builder Gel Clear',
-    category: 'Gel',
-    quantity: 6,
-    minStock: 3,
-    unit: 'pots',
-    location: 'Gel cart top tray',
-    notes: ''
-  }
-].map(sanitizeItem);
 
 function getStatus(item) {
   if (item.quantity === 0) {
@@ -70,43 +38,45 @@ function getStatus(item) {
   return { statusLabel: 'In stock', statusClass: 'good' };
 }
 
-function loadItems() {
-  try {
-    const saved = localStorage.getItem(STORAGE_KEY);
-
-    if (!saved) {
-      return starterItems;
-    }
-
-    const parsed = JSON.parse(saved);
-    if (!Array.isArray(parsed)) {
-      return starterItems;
-    }
-
-    const cleaned = parsed.map(sanitizeItem).filter((item) => item.name.trim());
-    return cleaned.length > 0 ? cleaned : starterItems;
-  } catch {
-    return starterItems;
-  }
-}
-
 function App() {
-  const [items, setItems] = useState(loadItems);
+  const [items, setItems] = useState([]);
   const [formData, setFormData] = useState(initialFormState);
   const [editingId, setEditingId] = useState(null);
   const [searchTerm, setSearchTerm] = useState('');
   const [categoryFilter, setCategoryFilter] = useState('All');
   const [showLowOnly, setShowLowOnly] = useState(false);
+  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(items));
-  }, [items]);
+    fetchItems();
+  }, []);
+
+  async function fetchItems() {
+    setLoading(true);
+
+    const { data, error } = await supabase
+      .from('inventory_items')
+      .select('*')
+      .order('created_at', { ascending: false });
+
+    if (error) {
+      console.error('Error loading items:', error);
+      setLoading(false);
+      return;
+    }
+
+    setItems((data ?? []).map(sanitizeItem));
+    setLoading(false);
+  }
 
   const decoratedItems = useMemo(() => {
-    return items.map((item) => ({
-      ...sanitizeItem(item),
-      ...getStatus(sanitizeItem(item))
-    }));
+    return items.map((item) => {
+      const safeItem = sanitizeItem(item);
+      return {
+        ...safeItem,
+        ...getStatus(safeItem)
+      };
+    });
   }, [items]);
 
   const filteredItems = useMemo(() => {
@@ -118,8 +88,10 @@ function App() {
         .join(' ');
 
       const matchesSearch = search === '' || haystack.includes(search);
-      const matchesCategory = categoryFilter === 'All' || item.category === categoryFilter;
-      const matchesLowStock = !showLowOnly || item.quantity <= item.minStock;
+      const matchesCategory =
+        categoryFilter === 'All' || item.category === categoryFilter;
+      const matchesLowStock =
+        !showLowOnly || item.quantity <= item.minStock;
 
       return matchesSearch && matchesCategory && matchesLowStock;
     });
@@ -127,8 +99,14 @@ function App() {
 
   const stats = useMemo(() => {
     const totalItems = items.length;
-    const lowStockCount = items.filter((item) => sanitizeItem(item).quantity <= sanitizeItem(item).minStock).length;
-    const outOfStockCount = items.filter((item) => sanitizeItem(item).quantity === 0).length;
+    const lowStockCount = items.filter((item) => {
+      const safeItem = sanitizeItem(item);
+      return safeItem.quantity <= safeItem.minStock;
+    }).length;
+    const outOfStockCount = items.filter((item) => {
+      const safeItem = sanitizeItem(item);
+      return safeItem.quantity === 0;
+    }).length;
 
     return { totalItems, lowStockCount, outOfStockCount };
   }, [items]);
@@ -143,7 +121,9 @@ function App() {
 
     setFormData((current) => ({
       ...current,
-      [name]: name === 'quantity' || name === 'minStock' ? Number(value) : value
+      [name]: name === 'quantity' || name === 'minStock'
+        ? Number(value)
+        : value
     }));
   }
 
@@ -152,7 +132,7 @@ function App() {
     setEditingId(null);
   }
 
-  function handleSubmit(event) {
+  async function handleSubmit(event) {
     event.preventDefault();
 
     const cleanedItem = sanitizeItem({
@@ -167,20 +147,47 @@ function App() {
       return;
     }
 
+    const payload = {
+      name: cleanedItem.name,
+      category: cleanedItem.category,
+      quantity: cleanedItem.quantity,
+      min_stock: cleanedItem.minStock,
+      unit: cleanedItem.unit,
+      location: cleanedItem.location,
+      notes: cleanedItem.notes
+    };
+
     if (editingId) {
+      const { data, error } = await supabase
+        .from('inventory_items')
+        .update(payload)
+        .eq('id', editingId)
+        .select()
+        .single();
+
+      if (error) {
+        console.error('Error updating item:', error);
+        return;
+      }
+
       setItems((current) =>
         current.map((item) =>
-          item.id === editingId ? { ...item, ...cleanedItem, id: editingId } : item
+          item.id === editingId ? sanitizeItem(data) : item
         )
       );
     } else {
-      setItems((current) => [
-        {
-          id: makeId(),
-          ...cleanedItem
-        },
-        ...current
-      ]);
+      const { data, error } = await supabase
+        .from('inventory_items')
+        .insert([payload])
+        .select()
+        .single();
+
+      if (error) {
+        console.error('Error adding item:', error);
+        return;
+      }
+
+      setItems((current) => [sanitizeItem(data), ...current]);
     }
 
     resetForm();
@@ -197,7 +204,17 @@ function App() {
     window.scrollTo({ top: 0, behavior: 'smooth' });
   }
 
-  function handleDelete(id) {
+  async function handleDelete(id) {
+    const { error } = await supabase
+      .from('inventory_items')
+      .delete()
+      .eq('id', id);
+
+    if (error) {
+      console.error('Error deleting item:', error);
+      return;
+    }
+
     setItems((current) => current.filter((item) => item.id !== id));
 
     if (editingId === id) {
@@ -205,32 +222,49 @@ function App() {
     }
   }
 
-  function handleQuickAdjust(id, amount) {
-    setItems((current) =>
-      current.map((item) => {
-        if (item.id !== id) {
-          return item;
-        }
+  async function handleQuickAdjust(id, amount) {
+    const itemToUpdate = items.find((item) => item.id === id);
+    if (!itemToUpdate) {
+      return;
+    }
 
-        const safeItem = sanitizeItem(item);
-        return { ...safeItem, quantity: Math.max(0, safeItem.quantity + amount) };
-      })
+    const safeItem = sanitizeItem(itemToUpdate);
+    const newQuantity = Math.max(0, safeItem.quantity + amount);
+
+    const { data, error } = await supabase
+      .from('inventory_items')
+      .update({ quantity: newQuantity })
+      .eq('id', id)
+      .select()
+      .single();
+
+    if (error) {
+      console.error('Error updating quantity:', error);
+      return;
+    }
+
+    setItems((current) =>
+      current.map((item) => (item.id === id ? sanitizeItem(data) : item))
     );
   }
 
   return (
     <main className="app-shell">
-  <section className="hero">
-    <div className="hero-top">
-      <img src="/logo.JPEG" alt="Allure Nail Salon logo" className="brand-logo" />
-      <div>
-        <h1>Allure Nail Salon Inventory Tracker</h1>
-        <p className="hero-text">
-          Track products, flag low stock, and keep storage locations organized in one place.
-        </p>
-      </div>
-    </div>
-  </section>
+      <section className="hero">
+        <div className="hero-top">
+          <img
+            src="/logo.JPEG"
+            alt="Allure Nail Salon logo"
+            className="brand-logo"
+          />
+          <div>
+            <h1>Allure Nail Salon Inventory Tracker</h1>
+            <p className="hero-text">
+              Track products, flag low stock, and keep storage locations organized in one place.
+            </p>
+          </div>
+        </div>
+      </section>
 
       <section className="stats-grid">
         <article className="stat-card">
@@ -304,7 +338,11 @@ function App() {
         onEdit={handleEdit}
         onDelete={handleDelete}
         onQuickAdjust={handleQuickAdjust}
-        filterSummary={`Showing ${filteredItems.length} of ${items.length} items`}
+        filterSummary={
+          loading
+            ? 'Loading items...'
+            : `Showing ${filteredItems.length} of ${items.length} items`
+        }
       />
     </main>
   );
