@@ -34,3 +34,4 @@ npm run dev
 - Replace `localStorage` with a real backend
 - Add weekly usage history
 - Add export to CSV
+# Allure-Nail-Salon-Inventory-Tracker-demo
